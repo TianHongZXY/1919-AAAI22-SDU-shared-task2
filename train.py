@@ -1,9 +1,13 @@
+import torch
 import argparse
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from transformers import AutoModel, AutoTokenizer, AdamW
-from dataloader import read_data
+from transformers import AutoModel, AutoTokenizer, AdamW, BertModel
+from dataloader import read_data, CrossInteractionDataset
+from itertools import chain
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class Pooler(nn.Module):
@@ -47,9 +51,9 @@ class MLPLayer(nn.Module):
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
     """
 
-    def __init__(self, config):
+    def __init__(self, args):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = nn.Linear(args.hidden_size, args.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, features, **kwargs):
@@ -60,9 +64,9 @@ class MLPLayer(nn.Module):
 
 class OutputLayer(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, args):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, 1)
+        self.dense = nn.Linear(args.hidden_size, 1)
 
     def forward(self, features, **kwargs):
         logits = self.dense(features)
@@ -74,17 +78,11 @@ def init_model(cls, args):
     init function.
     """
     cls.pooler_type = args.pooler_type
-    cls.pooler = Pooler(args.pooler_type)
-    if cls.model_args.pooler_type == "cls":
+    cls._pooler = Pooler(args.pooler_type)
+    if args.pooler_type == "cls":
         cls.mlp = MLPLayer(args)
     cls.output = OutputLayer(args)
     cls.init_weights()
-
-
-def train(model, dataloader):
-
-
-
 
 def main():
     parser = argparse.ArgumentParser("Transformers Classifier")
@@ -108,6 +106,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-5)
     parser.add_argument("--warm_up_learning_rate", type=float, default=3e-5)
     parser.add_argument("--device", type=int, default=-1)
+    parser.add_argument("--pooler_type", type=str, default="cls")
 
     parser.add_argument("--save_model_path",
                         type=str,
@@ -123,6 +122,8 @@ def main():
     device = torch.device(args.device) if torch.cuda.is_available() and args.device != -1 else torch.device('cpu')
 
     model = AutoModel.from_pretrained(args.model)
+    args.hidden_size = model.config.hidden_size
+    print(model.config)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     train_sent, train_abbr, train_long_term, train_label = read_data(args.trainset)
@@ -136,20 +137,22 @@ def main():
 
     train_encoded_inputs = tokenizer(train_sent, train_long_term, padding=True, truncation=True, return_tensors="pt")
     valid_encoded_inputs = tokenizer(valid_sent, valid_long_term, padding=True, truncation=True, return_tensors="pt")
+    for k, v in train_encoded_inputs.items(): 
+        train_encoded_inputs[k] = train_encoded_inputs[k].to(args.device)
+    for k, v in valid_encoded_inputs.items(): 
+        valid_encoded_inputs[k] = valid_encoded_inputs[k].to(args.device)
 
-    train_dataset = CrossInteractionDataset(train_encoded_inputs, train_label, device)
-    valid_dataset = CrossInteractionDataset(valid_encoded_inputs, valid_label, device)
+    train_dataset = CrossInteractionDataset(train_encoded_inputs, torch.FloatTensor(train_label))
+    valid_dataset = CrossInteractionDataset(valid_encoded_inputs, torch.FloatTensor(valid_label))
 
     train_loader = DataLoader(train_dataset,
                               batch_size=args.batch_size,
                               shuffle=True,
-                              pin_memory=True,
-                              num_workers=4)
-    valid_loader = DataLoader(val_dataset,
+                              )
+    valid_loader = DataLoader(valid_dataset,
                             batch_size=args.batch_size,
                             shuffle=True,
-                            pin_memory=True,
-                            num_workers=4)
+                            )
 
     #  optimizer_warmup = AdamW(model.parameters(), lr=args.warm_up_learning_rate)
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
@@ -163,18 +166,18 @@ def main():
 
         for idx, batch in enumerate(train_loader):
             step += 1
-            #  optim_warmup.zero_grad()
-            optim.zero_grad()
+            #  optimizer_warmup.zero_grad()
+            optimizer.zero_grad()
 
             outputs = model(**batch['data'])
-            pooler_output = model.pooler(batch['data']['attention_mask'], outputs)
+            pooler_output = model._pooler(batch['data']['attention_mask'], outputs)
             # If using "cls", we add an extra MLP layer
             # (same as BERT's original implementation) over the representation.
-            if cls.pooler_type == "cls":
+            if model.pooler_type == "cls":
                 pooler_output = model.mlp(pooler_output)
 
             logits = model.output(pooler_output)
-            loss = criterion(logits, batch['label'])
+            loss = criterion(logits.view(-1), batch['label'].to(device))
 
 
             loss_prt = loss.cpu().detach().numpy() if CUDA_AVAILABLE else loss.detach().numpy()
@@ -182,27 +185,27 @@ def main():
 
             loss.backward()
             optimizer.step()
-            print(f"Train step {step}\tLoss: {loss_prt}")
+            if step % args.print_frequency == 0 and not args.print_frequency == -1:
+                print(f"Train step {step}\tLoss: {loss_prt}")
 
-            if step % args.print_frequency == 0 and not step <= args.warm_up_steps and not args.print_frequency == -1:
+            if step % (args.print_frequency * 10) == 0 and not args.print_frequency == -1:
                 print('Evaluating...')
                 model.eval()
                 for idx, batch in enumerate(valid_loader):
                     outputs = model(**batch['data'])
-                    pooler_output = model.pooler(batch['data']['attention_mask'], outputs)
+                    pooler_output = model._pooler(batch['data']['attention_mask'], outputs)
                     if cls.pooler_type == "cls":
                         pooler_output = model.mlp(pooler_output)
 
                     logits = model.output(pooler_output)
-                    loss = criterion(logits, batch['label'])
+                    loss = criterion(logits.view(-1), batch['label'].to(device))
                     loss_prt = loss.cpu().detach().numpy() if CUDA_AVAILABLE else loss.detach().numpy()
                     loss_prt = round(float(loss_prt), 3)
                     print(f"Valid Loss: {loss_prt}")
+                model.train()
 
-            print(f'Saving model at epoch {epoch} step {step}')
-            model.save_pretrained(f"{args.save_model_path}_%d" % epoch)
-
-
+        print(f'Saving model at epoch {epoch} step {step}')
+        model.save_pretrained(f"{args.save_model_path}_%d" % epoch)
 
             #  if step <= args.warm_up_steps:
             #      if step % 500 == 0:
@@ -223,3 +226,4 @@ if __name__ == "__main__":
         print("CUDA IS AVAILABLE")
     else:
         print("CUDA NOT AVAILABLE")
+    main()

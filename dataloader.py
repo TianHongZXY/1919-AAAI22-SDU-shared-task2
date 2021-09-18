@@ -11,11 +11,12 @@ def read_data(path):
     label = []
 
     for idx, ins in enumerate(data):
+        ins = ins.strip()
         ins = ins.split('\t')
         sent.append(ins[0])
         abbr.append(ins[1])
         long_term.append(ins[2])
-        label.append(ins[3])
+        label.append(int(ins[3]))
     
     return sent, abbr, long_term, label
 
@@ -26,10 +27,20 @@ def preprocess(args, tokenizer):
     print("Dataset loaded.")
     
 class CrossInteractionDataset(torch.utils.data.Dataset):
-    def __init__(self, tokenized_data, device):
-        self.data = tokenized_data 
+    def __init__(self, tokenized_data, label):
+        self.input_ids = tokenized_data["input_ids"]
+        self.token_type_ids = tokenized_data["token_type_ids"]
+        self.attention_mask = tokenized_data["attention_mask"]
         self.label = label
-        self.device = device
 
     def __getitem__(self, idx):
-        return {'data': self.data[idx].to(self.device), 'label': self.label[idx].to(self.device)}
+        return {"data":
+                {"input_ids": self.input_ids[idx], 
+                "token_type_ids": self.token_type_ids[idx], 
+                "attention_mask": self.attention_mask[idx]
+                },
+                "label": self.label[idx]
+                }
+    
+    def __len__(self):
+        return len(self.label)
