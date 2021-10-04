@@ -194,7 +194,7 @@ def main():
                 for idx, batch in enumerate(valid_loader):
                     outputs = model(**batch['data'])
                     pooler_output = model._pooler(batch['data']['attention_mask'], outputs)
-                    if cls.pooler_type == "cls":
+                    if model.pooler_type == "cls":
                         pooler_output = model.mlp(pooler_output)
 
                     logits = model.output(pooler_output)
