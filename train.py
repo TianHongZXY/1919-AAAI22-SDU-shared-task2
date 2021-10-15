@@ -1,124 +1,32 @@
+# ====================================================
+#   Copyright (C) 2021  All rights reserved.
+#
+#   Author        : Xinyu Zhu
+#   Email         : zhuxy21@mails.tsinghua.edu.cn
+#   File Name     : train.py
+#   Last Modified : 2021-10-15 13:50
+#   Describe      : 
+#
+# ====================================================
+
 import torch
 import argparse
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from transformers import AutoModel, AutoTokenizer, AdamW, BertModel
-from dataloader import read_data, CrossInteractionDataset
+from transformers import AutoModel, AutoTokenizer, AdamW
+from dataloader import Task2DataModel, Task2Dataset
 from itertools import chain
+from models.bert_baseline import Bert, BaseADModel
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer, seed_everything, loggers
+from pytorch_lightning.callbacks.progress import tqdm
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-
-class Pooler(nn.Module):
-    """
-    Parameter-free poolers to get the sentence embedding
-    'cls': [CLS] representation with BERT/RoBERTa's MLP pooler.
-    'cls_before_pooler': [CLS] representation without the original MLP pooler.
-    'avg': average of the last layers' hidden states at each token.
-    'avg_top2': average of the last two layers.
-    'avg_first_last': average of the first and the last layers.
-    """
-    def __init__(self, pooler_type):
-        super().__init__()
-        self.pooler_type = pooler_type
-        assert self.pooler_type in ["cls", "cls_before_pooler", "avg", "avg_top2", "avg_first_last"], "unrecognized pooling type %s" % self.pooler_type
-
-    def forward(self, attention_mask, outputs):
-        last_hidden = outputs.last_hidden_state
-        pooler_output = outputs.pooler_output
-        hidden_states = outputs.hidden_states
-
-        if self.pooler_type in ['cls_before_pooler', 'cls']:
-            return last_hidden[:, 0]
-        elif self.pooler_type == "avg":
-            return ((last_hidden * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1))
-        elif self.pooler_type == "avg_first_last":
-            first_hidden = hidden_states[0]
-            last_hidden = hidden_states[-1]
-            pooled_result = ((first_hidden + last_hidden) / 2.0 * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
-            return pooled_result
-        elif self.pooler_type == "avg_top2":
-            second_last_hidden = hidden_states[-2]
-            last_hidden = hidden_states[-1]
-            pooled_result = ((last_hidden + second_last_hidden) / 2.0 * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1)
-            return pooled_result
-        else:
-            raise NotImplementedError
-
-class MLPLayer(nn.Module):
-    """
-    Head for getting sentence representations over RoBERTa/BERT's CLS representation.
-    """
-
-    def __init__(self, args):
-        super().__init__()
-        self.dense = nn.Linear(args.hidden_size, args.hidden_size)
-        self.activation = nn.Tanh()
-
-    def forward(self, features, **kwargs):
-        x = self.dense(features)
-        x = self.activation(x)
-
-        return x
-
-class OutputLayer(nn.Module):
-
-    def __init__(self, args):
-        super().__init__()
-        self.dense = nn.Linear(args.hidden_size, 1)
-
-    def forward(self, features, **kwargs):
-        logits = self.dense(features)
-
-        return logits
-
-def init_model(cls, args):
-    """
-    init function.
-    """
-    cls.pooler_type = args.pooler_type
-    cls._pooler = Pooler(args.pooler_type)
-    if args.pooler_type == "cls":
-        cls.mlp = MLPLayer(args)
-    cls.output = OutputLayer(args)
-    cls.init_weights()
 
 def main():
-    parser = argparse.ArgumentParser("Transformers Classifier")
-    parser.add_argument("--do_train", action="store_true")
-    #  parser.add_argument("--do_predict", action="store_true")
-    #  parser.add_argument("--do_evaluation", action="store_true")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="bert-base-cased")
-    parser.add_argument("--trainset", type=str, default="processed_data/english/legal/train_single.tsv")
-    parser.add_argument("--validset", type=str, default="processed_data/english/legal/dev_single.tsv")
-    parser.add_argument("--load_checkpoint", action="store_true")
-    parser.add_argument("--checkpoint", type=str, default="./checkpoints/bertad_1")
-    parser.add_argument("--max_length", type=int, default=512)
-    parser.add_argument("--total_epochs", type=int, default=20)
-    parser.add_argument("--eval_checkpoint", type=int, default=7)
-    parser.add_argument("--print_frequency", type=int, default=-1)
-    parser.add_argument("--warm_up_steps", type=int, default=6000)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--learning_rate", type=float, default=3e-5)
-    parser.add_argument("--warm_up_learning_rate", type=float, default=3e-5)
-    parser.add_argument("--device", type=int, default=-1)
-    parser.add_argument("--pooler_type", type=str, default="cls")
-
-    parser.add_argument("--save_model_path",
-                        type=str,
-                        default="checkpoints/bertad")
-    parser.add_argument("--save_result_path",
-                        type=str,
-                        default="test_result.tsv")
-    parser.add_argument("--dataset_type",
-                        type=str,
-                        default='english')
-
-    args = parser.parse_args()
     device = torch.device(args.device) if torch.cuda.is_available() and args.device != -1 else torch.device('cpu')
 
     model = AutoModel.from_pretrained(args.model)
@@ -132,7 +40,7 @@ def main():
     tokenizer.add_tokens(train_abbr)
     model.resize_token_embeddings(len(tokenizer))
 
-    init_model(model, args)
+    #  init_model(model, args)
     model = model.to(device)
 
     train_encoded_inputs = tokenizer(train_sent, train_long_term, padding=True, truncation=True, return_tensors="pt")
@@ -219,11 +127,119 @@ def main():
             #      optim.step()
 
 
-if __name__ == "__main__":
-    CUDA_AVAILABLE = False
-    if torch.cuda.is_available():
-        CUDA_AVAILABLE = True
-        print("CUDA IS AVAILABLE")
+def main1(args):
+
+    save_path = os.path.join(args.save_dir, args.model_name)
+
+    if args.model_name == 'BertModel':
+        Model = Bert
+        hyparas = 'lr: {} - pooler_type: {} - pretrained_model: {}'.format(
+            args.lr, args.pooler_type, args.pretrained_model)
+        save_path = os.path.join(save_path, hyparas)
+
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    seed_everything(args.seed)
+
+    logger = loggers.TensorBoardLogger(save_dir=os.path.join(
+        save_path, 'logs/'), name='')
+    checkpoint = ModelCheckpoint(dirpath=save_path,
+                                 save_top_k=1,
+                                 monitor='valid_loss',
+                                 mode='min',
+                                 filename='{epoch:02d}-{valid_loss:.4f}')
+    early_stop = EarlyStopping(monitor='valid_loss', mode='min', patience=10)
+    trainer = Trainer.from_argparse_args(args,
+                                         logger=logger,
+                                         callbacks=[checkpoint, early_stop])
+
+    if args.eval is False:
+        tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model,
+                                                  use_fast=True)
+
+        data_model = Task2DataModel(args, tokenizer)
+        args.nlabels = data_model.max_long_form
+        model = Model(args, tokenizer)
+        #  model.setup('fit')
+        trainer.fit(model, data_model)
+        tokenizer.save_pretrained(save_path)
+        checkpoint_path = checkpoint.best_model_path
     else:
-        print("CUDA NOT AVAILABLE")
-    main()
+        tokenizer = AutoTokenizer.from_pretrained(save_path)
+        data_model = Task2DataModel(args, tokenizer)
+        checkpoint_path = os.path.join(save_path, args.checkpoint_path)
+
+    # module evaluation
+    model = Model.load_from_checkpoint(checkpoint_path, tokenizer=tokenizer)
+    #  evaluation(args, model, data_model, save_path)
+
+
+def evaluation(args, model, data_model, save_path):
+
+    data_model.setup('test')
+    tokenizer = data_model.tokenizer
+    test_loader = data_model.test_dataloader()
+
+    device = torch.device('cuda:0')
+    model.to(device)
+    model.eval()
+
+    results = []
+    for batch in tqdm(test_loader):
+
+        predicts = model.predict(batch['input_ids'].to(device),
+                                 batch['attention_mask'].to(device),
+                                 batch['token_type_ids'].to(device),
+                                 batch['softmax_mask'].to(device))
+
+        for idx, predict in enumerate(predicts):
+
+            text = batch['text'][idx]
+            offset_mapping = batch['offset_mapping'][idx]
+            
+            acronyms, long_forms = data_model.decode(text, predict, offset_mapping)
+
+            pred = {
+                'ID': batch['idx'][idx],
+                'acronyms': acronyms,
+                'long-forms': long_forms
+            }
+            results.append(pred)
+
+    with open(os.path.join(save_path, 'outputs.json'), 'w') as f:
+        json.dump(results, f, indent=4)
+
+if __name__ == '__main__':
+    total_parser = argparse.ArgumentParser("AAAI task2 AD")
+    #  parser.add_argument("--do_train", action="store_true")
+    #  parser.add_argument("--trainset", type=str, default="processed_data/english/legal/train_single.tsv")
+    #  parser.add_argument("--validset", type=str, default="processed_data/english/legal/dev_single.tsv")
+    #  parser.add_argument("--load_checkpoint", action="store_true")
+    #  parser.add_argument("--checkpoint", type=str, default="./checkpoints/bertad_1")
+    #  parser.add_argument("--max_length", type=int, default=512)
+    #  parser.add_argument("--eval_checkpoint", type=int, default=7)
+    #  parser.add_argument("--print_frequency", type=int, default=-1)
+    #  parser.add_argument("--batch_size", type=int, default=64)
+    #  parser.add_argument("--device", type=int, default=-1)
+    #
+    #  parser.add_argument("--save_model_path",
+    #                      type=str,
+    #                      default="checkpoints/bertad")
+    #  parser.add_argument("--save_result_path",
+    #                      type=str,
+    #                      default="test_result.tsv")
+    #  parser.add_argument("--dataset_type",
+    #                      type=str,
+    #                      default='english')
+
+    # * Args for data preprocessing
+    total_parser = Task2DataModel.add_data_specific_args(total_parser)
+    # * Args for training
+    total_parser = Trainer.add_argparse_args(total_parser)
+    # * Args for model specific
+    total_parser = BaseADModel.add_model_specific_args(total_parser)
+
+    args = total_parser.parse_args()
+    
+    main1(args)
