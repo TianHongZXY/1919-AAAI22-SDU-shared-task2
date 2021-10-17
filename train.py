@@ -148,7 +148,7 @@ def main1(args):
     checkpoint = ModelCheckpoint(dirpath=save_path,
                                  save_top_k=1,
                                  monitor='valid_acc',
-                                 mode='min',
+                                 mode='max',
                                  filename='{epoch:02d}-{valid_acc:.4f}')
     early_stop = EarlyStopping(monitor='valid_acc', mode='max', patience=5)
     trainer = Trainer.from_argparse_args(args,
