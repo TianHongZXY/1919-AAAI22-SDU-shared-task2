@@ -1,0 +1,6 @@
+data/
+*sw*
+*.json
+__pycache__/
+save/
+checkpoints/

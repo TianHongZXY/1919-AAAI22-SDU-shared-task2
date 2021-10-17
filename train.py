@@ -4,12 +4,13 @@
 #   Author        : Xinyu Zhu
 #   Email         : zhuxy21@mails.tsinghua.edu.cn
 #   File Name     : train.py
-#   Last Modified : 2021-10-15 13:50
+#   Last Modified : 2021-10-17 09:30
 #   Describe      : 
 #
 # ====================================================
 
 import torch
+import json
 import argparse
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -134,7 +135,7 @@ def main1(args):
     if args.model_name == 'BertModel':
         Model = Bert
         hyparas = 'lr: {} - pooler_type: {} - pretrained_model: {}'.format(
-            args.lr, args.pooler_type, args.pretrained_model)
+            args.lr, args.pooler_type, os.path.split(args.pretrained_model)[-1])
         save_path = os.path.join(save_path, hyparas)
 
     if not os.path.exists(save_path):
@@ -146,22 +147,22 @@ def main1(args):
         save_path, 'logs/'), name='')
     checkpoint = ModelCheckpoint(dirpath=save_path,
                                  save_top_k=1,
-                                 monitor='valid_loss',
+                                 monitor='valid_acc',
                                  mode='min',
-                                 filename='{epoch:02d}-{valid_loss:.4f}')
-    early_stop = EarlyStopping(monitor='valid_loss', mode='min', patience=10)
+                                 filename='{epoch:02d}-{valid_acc:.4f}')
+    early_stop = EarlyStopping(monitor='valid_acc', mode='max', patience=5)
     trainer = Trainer.from_argparse_args(args,
                                          logger=logger,
                                          callbacks=[checkpoint, early_stop])
 
     if args.eval is False:
+        print(args.pretrained_model)
         tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model,
                                                   use_fast=True)
 
         data_model = Task2DataModel(args, tokenizer)
         args.nlabels = data_model.max_long_form
         model = Model(args, tokenizer)
-        #  model.setup('fit')
         trainer.fit(model, data_model)
         tokenizer.save_pretrained(save_path)
         checkpoint_path = checkpoint.best_model_path
@@ -172,8 +173,7 @@ def main1(args):
 
     # module evaluation
     model = Model.load_from_checkpoint(checkpoint_path, tokenizer=tokenizer)
-    #  evaluation(args, model, data_model, save_path)
-
+    evaluation(args, model, data_model, save_path)
 
 def evaluation(args, model, data_model, save_path):
 
@@ -181,7 +181,7 @@ def evaluation(args, model, data_model, save_path):
     tokenizer = data_model.tokenizer
     test_loader = data_model.test_dataloader()
 
-    device = torch.device('cuda:0')
+    device = torch.device('cpu')
     model.to(device)
     model.eval()
 
@@ -194,44 +194,19 @@ def evaluation(args, model, data_model, save_path):
                                  batch['softmax_mask'].to(device))
 
         for idx, predict in enumerate(predicts):
-
-            text = batch['text'][idx]
-            offset_mapping = batch['offset_mapping'][idx]
-            
-            acronyms, long_forms = data_model.decode(text, predict, offset_mapping)
+            long_form = data_model.acronym2lf[batch['acronym'][idx]][int(predict)]
 
             pred = {
                 'ID': batch['idx'][idx],
-                'acronyms': acronyms,
-                'long-forms': long_forms
+                'label': long_form
             }
             results.append(pred)
 
-    with open(os.path.join(save_path, 'outputs.json'), 'w') as f:
+    with open(os.path.join(save_path, '-'.join(args.data_dir.split('/')[2:]) + '-outputs.json'), 'w') as f:
         json.dump(results, f, indent=4)
 
 if __name__ == '__main__':
     total_parser = argparse.ArgumentParser("AAAI task2 AD")
-    #  parser.add_argument("--do_train", action="store_true")
-    #  parser.add_argument("--trainset", type=str, default="processed_data/english/legal/train_single.tsv")
-    #  parser.add_argument("--validset", type=str, default="processed_data/english/legal/dev_single.tsv")
-    #  parser.add_argument("--load_checkpoint", action="store_true")
-    #  parser.add_argument("--checkpoint", type=str, default="./checkpoints/bertad_1")
-    #  parser.add_argument("--max_length", type=int, default=512)
-    #  parser.add_argument("--eval_checkpoint", type=int, default=7)
-    #  parser.add_argument("--print_frequency", type=int, default=-1)
-    #  parser.add_argument("--batch_size", type=int, default=64)
-    #  parser.add_argument("--device", type=int, default=-1)
-    #
-    #  parser.add_argument("--save_model_path",
-    #                      type=str,
-    #                      default="checkpoints/bertad")
-    #  parser.add_argument("--save_result_path",
-    #                      type=str,
-    #                      default="test_result.tsv")
-    #  parser.add_argument("--dataset_type",
-    #                      type=str,
-    #                      default='english')
 
     # * Args for data preprocessing
     total_parser = Task2DataModel.add_data_specific_args(total_parser)

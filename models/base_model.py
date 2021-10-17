@@ -4,7 +4,7 @@
 #   Author        : Xinyu Zhu
 #   Email         : zhuxy21@mails.tsinghua.edu.cn
 #   File Name     : base_model.py
-#   Last Modified : 2021-10-15 13:51
+#   Last Modified : 2021-10-17 08:04
 #   Describe      : 
 #
 # ====================================================
@@ -125,16 +125,17 @@ class BaseADModel(pl.LightningModule):
         if stage == 'fit':
             train_loader = self.train_dataloader()
             self.total_step = int(self.trainer.max_epochs * len(train_loader) / \
-                (self.trainer.gpus * self.trainer.accumulate_grad_batches))
+                (max(1, self.trainer.gpus) * self.trainer.accumulate_grad_batches))
             print('Total training step:', self.total_step)
 
     def train_inputs(self, batch):
-        return {
+        batch_data = {
             'input_ids': batch['input_ids'],
             'attention_mask': batch['attention_mask'],
-            'token_type_ids': batch['token_type_ids'],
             'softmax_mask': batch['softmax_mask'],
+            'token_type_ids': batch['token_type_ids']
         }
+        return batch_data
 
     def training_step(self, batch, batch_idx):
         inputs = self.train_inputs(batch)
@@ -170,7 +171,7 @@ class BaseADModel(pl.LightningModule):
         acc = ncorrect / ntotal
 
         self.log('valid_loss', loss, on_epoch=True, prog_bar=True)
-        self.log("valid_acc", acc, on_step=True, prog_bar=True)
+        self.log("valid_acc", acc, on_epoch=True, prog_bar=True)
 
         return ncorrect, ntotal
 
@@ -181,12 +182,12 @@ class BaseADModel(pl.LightningModule):
             ncorrect += x[0]
             ntotal += x[1]
         ncorrect = int(ncorrect.detach().cpu())
-        print(f"\nValidation Accuracy: {round(ncorrect / ntotal, 3)}")
+        print(f"Validation Accuracy: {round(ncorrect / ntotal, 3)}")
 
 
     def configure_optimizers(self):
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-        paras = list(self.named_parameters())
+        paras = list(filter(lambda p: p[1].requires_grad, self.named_parameters()))
         paras = [{
             'params':
             [p for n, p in paras if not any(nd in n for nd in no_decay)],

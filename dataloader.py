@@ -4,7 +4,7 @@
 #   Author        : Xinyu Zhu
 #   Email         : zhuxy21@mails.tsinghua.edu.cn
 #   File Name     : dataloader.py
-#   Last Modified : 2021-10-15 13:51
+#   Last Modified : 2021-10-17 08:03
 #   Describe      : 
 #
 # ====================================================
@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import random
 import numpy as np
+from tqdm import tqdm
 from collections import defaultdict
 import pytorch_lightning as pl
 from typing import Optional
@@ -51,7 +52,7 @@ class Task2DataModel(pl.LightningDataModule):
                             type=str)
         parser.add_argument('--train_batchsize', default=32, type=int)
         parser.add_argument('--valid_batchsize', default=16, type=int)
-        parser.add_argument('--recreate_dataset', action='store_true', default=False)
+        parser.add_argument('--recreate_dataset', action='store_false', default=True)
         
         return parent_args
     
@@ -82,10 +83,11 @@ class Task2DataModel(pl.LightningDataModule):
             self.max_long_form = max(self.max_long_form, len(lf_list))
             self.avg_long_form += len(lf_list)
         self.avg_long_form /= len(self.acronym2lf)
-        print(f'In {self.diction}, each acronym has up to {self.max_long_form} long forms and averagely each has {self.avg_long_form} long forms.')
+        print(f'In {self.diction}, each acronym has up to {self.max_long_form} long forms and averagely each has {round(self.avg_long_form, 3)} long forms.')
 
         self.train_batchsize = args.train_batchsize
         self.valid_batchsize = args.valid_batchsize
+        self.recreate_dataset = args.recreate_dataset
 
     def setup(self, stage: Optional[str] = None) -> None:
 
@@ -113,7 +115,7 @@ class Task2DataModel(pl.LightningDataModule):
 
     def create_dataset(self, cached_data_path, data_path, test=False):
 
-        if  os.path.exists(cached_data_path):
+        if  os.path.exists(cached_data_path) and not self.recreate_dataset:
             print(f'Loading cached dataset from {cached_data_path}...')
             data = torch.load(cached_data_path)
         else:
@@ -128,7 +130,7 @@ class Task2DataModel(pl.LightningDataModule):
             for acr, lf_list in acronym2lf_padded.items():
                 acronym2lf_padded[acr] += [self.tokenizer.pad_token] * (self.max_long_form - len(acronym2lf_padded[acr]))
 
-            for example in dataset:
+            for example in tqdm(dataset):
                 sentence = example['sentence']
                 acronym = example['acronym']
                 max_long_form_cur = max(max_long_form_cur, len(self.acronym2lf[acronym]))
@@ -141,27 +143,31 @@ class Task2DataModel(pl.LightningDataModule):
                 softmax_mask = [1] * len(self.acronym2lf[acronym])
                 softmax_mask += [0] * (self.max_long_form - len(softmax_mask))
                 softmax_mask = softmax_mask
-                token_type_ids = encoded['token_type_ids']
 
                 # acronym的long_form的索引即为标签
                 if not test:
                     long_form = example['label']
                     labels = self.acronym2lf[acronym].index(long_form)
 
+                # Roberta等模型没有token_type_ids
+                if 'token_type_ids' not in encoded:
+                    encoded['token_type_ids'] = [0] * len(input_ids)
                 example = {
                     'idx': example['ID'],
+                    'acronym': acronym,
                     'sentence': sentence,
                     'input_ids': torch.LongTensor(input_ids),
                     'attention_mask': torch.LongTensor(attention_mask),
+                    'token_type_ids': torch.LongTensor(encoded['token_type_ids']),
                     'softmax_mask': softmax_mask,
-                    'token_type_ids': torch.LongTensor(token_type_ids),
                 }
+
                 if not test:
                     example['labels'] = labels
                 data.append(example)
 
             avg_long_form_cur /= len(data)
-            output = f'In {data_path}, there are {len(data)} instances, each acronym has up to {max_long_form_cur} long forms and averagely each has {avg_long_form_cur} long forms.'
+            output = f'In {data_path}, there are {len(data)} instances, each acronym has up to {max_long_form_cur} long forms and averagely each has {round(avg_long_form_cur, 3)} long forms.'
 
             data = Task2Dataset(data)
             torch.save(data, cached_data_path)
@@ -170,16 +176,17 @@ class Task2DataModel(pl.LightningDataModule):
 
     def collate_fn(self, batch):
 
-        # 避免test数据集没有labels报错
-        batch_data = defaultdict(None)
+        batch_data = {}
         for key in batch[0]:
             batch_data[key] = [example[key] for example in batch]
 
         input_ids = batch_data['input_ids']
         attention_mask = batch_data['attention_mask']
-        softmax_mask = batch_data['softmax_mask']
         token_type_ids = batch_data['token_type_ids']
-        labels = torch.LongTensor(batch_data['labels'])
+        softmax_mask = batch_data['softmax_mask']
+        labels = None
+        if 'labels' in batch_data:
+            labels = torch.LongTensor(batch_data['labels'])
 
         input_ids = nn.utils.rnn.pad_sequence(
             input_ids,
@@ -192,13 +199,15 @@ class Task2DataModel(pl.LightningDataModule):
         token_type_ids = nn.utils.rnn.pad_sequence(token_type_ids,
                                                    batch_first=True,
                                                    padding_value=0)
+
         batch_data = {
             'idx': batch_data['idx'],
+            'acronym': batch_data['acronym'],
             'sentence': batch_data['sentence'],
             'input_ids': input_ids,
             'attention_mask': attention_mask,
-            'softmax_mask': torch.tensor(softmax_mask),
             'token_type_ids': token_type_ids,
+            'softmax_mask': torch.tensor(softmax_mask),
             'labels': labels,
         }
 
