@@ -2,11 +2,10 @@ import argparse
 import json
 from collections import defaultdict
 
-def run_evaluation(args):
-    verbose = args.v
-    with open(args.g) as file:
+def run_evaluation(gold, pred, verbose=True):
+    with open(gold) as file:
         gold = dict([(d['ID'], d['label']) for d in json.load(file)])
-    with open(args.p) as file:
+    with open(pred) as file:
         pred = dict([(d['ID'], d['label']) for d in json.load(file)])
         pred = [pred[k] for k,v in gold.items()]
         gold = [gold[k] for k,v in gold.items()]
@@ -74,6 +73,6 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
-    p, r, f1 = run_evaluation(args)
+    p, r, f1 = run_evaluation(args.g, args.p, True)
     print('Official Scores:')
     print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p,r,f1))

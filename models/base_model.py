@@ -103,6 +103,7 @@ class BaseADModel(pl.LightningModule):
                             type=str)
         
         parser.add_argument('--lr', default=1e-5, type=float)
+        parser.add_argument('--l2', default=0., type=float)
         parser.add_argument('--warmup', default=0.1, type=float)
 
 
@@ -191,12 +192,10 @@ class BaseADModel(pl.LightningModule):
         paras = [{
             'params':
             [p for n, p in paras if not any(nd in n for nd in no_decay)],
-            'weight_decay':
-            0.01
+            'weight_decay': self.hparams.l2
         }, {
             'params': [p for n, p in paras if any(nd in n for nd in no_decay)],
-            'weight_decay':
-            0.0
+            'weight_decay': 0.0
         }]
         optimizer = AdamW(paras, lr=self.hparams.lr)
         scheduler = get_linear_schedule_with_warmup(
