@@ -32,9 +32,10 @@ class Bert(BaseADModel):
         self.config = AutoConfig.from_pretrained(args.pretrained_model)
         self.bert = AutoModel.from_pretrained(args.pretrained_model)
         self.bert.resize_token_embeddings(new_num_tokens=len(tokenizer))
-        for name, child in self.bert.named_children():
-            for param in child.parameters():
-                param.requires_grad = False
+        if not self.hparams.finetune:
+            for name, child in self.bert.named_children():
+                for param in child.parameters():
+                    param.requires_grad = False
 
         self.init_model(args)
 

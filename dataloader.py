@@ -39,7 +39,7 @@ class Task2DataModel(pl.LightningDataModule):
         parser.add_argument('--num_workers', default=8, type=int)
         parser.add_argument('--train_data', default='train.json', type=str)
         parser.add_argument('--valid_data', default='dev.json', type=str)
-        parser.add_argument('--test_data', default='dev.json', type=str)
+        parser.add_argument('--test_data', default='test.json', type=str)
         parser.add_argument('--diction', default='diction.json')
         parser.add_argument('--cached_train_data',
                             default='cached_train_data.pkl',
@@ -168,7 +168,7 @@ class Task2DataModel(pl.LightningDataModule):
 
             avg_long_form_cur /= len(data)
             output = f'In {data_path}, there are {len(data)} instances, each acronym has up to {max_long_form_cur} long forms and averagely each has {round(avg_long_form_cur, 3)} long forms.'
-
+            print(output)
             data = Task2Dataset(data)
             torch.save(data, cached_data_path)
 

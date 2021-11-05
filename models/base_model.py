@@ -18,6 +18,9 @@ import pytorch_lightning as pl
 from transformers import AutoModel, AutoTokenizer, AutoConfig, AdamW
 from transformers.optimization import get_linear_schedule_with_warmup
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from ChildTuningOptimizer import ChildTuningAdamW
+from sklearn.metrics import precision_score, recall_score, f1_score
+from scorer import score_expansion
 
 
 class Pooler(nn.Module):
@@ -92,7 +95,7 @@ class BaseADModel(pl.LightningModule):
         parser = parent_args.add_argument_group('BaseADModel')
         
         # * Args for general setting
-        parser.add_argument("--pooler_type", type=str, default="cls")
+        parser.add_argument("--pooler_type", type=str, default="cls", help="acceptable values: cls, cls_before_pooler, avg, avg_top2, avg_first_last")
         parser.add_argument('--eval', action='store_true', default=False)
         parser.add_argument('--checkpoint_path', default=None, type=str)
         parser.add_argument('--seed', default=20020206, type=int)
@@ -105,7 +108,8 @@ class BaseADModel(pl.LightningModule):
         parser.add_argument('--lr', default=1e-5, type=float)
         parser.add_argument('--l2', default=0., type=float)
         parser.add_argument('--warmup', default=0.1, type=float)
-
+        parser.add_argument('--child_tuning', action='store_true', default=False, help="if use the child tuning optimizer")
+        parser.add_argument('--finetune', action='store_true', default=False, help="if fine tune the pretrained model")
 
         return parent_args
 
@@ -164,6 +168,9 @@ class BaseADModel(pl.LightningModule):
         logits = self(**inputs)
         logits += (softmax_mask - 1) * 1e10
 
+        predict = logits.argmax(dim=-1)
+        predict = predict.cpu().tolist()
+
         if labels is not None:
             loss = self.loss_fn(logits.view(-1, self.nlabels), labels.view(-1))
 
@@ -171,19 +178,34 @@ class BaseADModel(pl.LightningModule):
         ncorrect = (logits.argmax(dim=-1) == batch['labels']).long().sum()
         acc = ncorrect / ntotal
 
-        self.log('valid_loss', loss, on_epoch=True, prog_bar=True)
-        self.log("valid_acc", acc, on_epoch=True, prog_bar=True)
+        self.log('valid_loss', loss, on_step=True, prog_bar=True)
+        self.log("valid_acc", acc, on_step=True, prog_bar=True)
 
-        return ncorrect, ntotal
+        return ncorrect, ntotal, predict, labels.cpu().tolist()
 
     def validation_epoch_end(self, validation_step_outputs):
         ncorrect = 0
         ntotal = 0
+        predictions = []
+        labels = []
         for x in validation_step_outputs:
             ncorrect += x[0]
             ntotal += x[1]
+            predictions.extend(x[2])
+            labels.extend(x[3])
+        precision, recall, f1 = score_expansion(labels, predictions, True)
         ncorrect = int(ncorrect.detach().cpu())
+        #  recall = recall_score(labels, predictions, average="macro")
+        #  precision = precision_score(labels, predictions, average="macro")
+        #  f1 = f1_score(labels, predictions, average='macro')
+        self.log('valid_acc_epoch', ncorrect / ntotal, on_epoch=True, prog_bar=True)
+        self.log('valid_recall', recall, on_epoch=True, prog_bar=True)
+        self.log('valid_precision', precision, on_epoch=True, prog_bar=True)
+        self.log('valid_f1', f1, on_epoch=True, prog_bar=True)
+
+        #  print("ncorrect = {}, ntotal = {}".format(ncorrect, ntotal))
         print(f"Validation Accuracy: {round(ncorrect / ntotal, 3)}")
+        print('Validation P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(precision, recall, f1))
 
 
     def configure_optimizers(self):
@@ -197,7 +219,10 @@ class BaseADModel(pl.LightningModule):
             'params': [p for n, p in paras if any(nd in n for nd in no_decay)],
             'weight_decay': 0.0
         }]
-        optimizer = AdamW(paras, lr=self.hparams.lr)
+        if self.hparams.child_tuning:
+            optimizer = ChildTuningAdamW(paras, lr=self.hparams.lr)
+        else:
+            optimizer = AdamW(paras, lr=self.hparams.lr)
         scheduler = get_linear_schedule_with_warmup(
             optimizer, int(self.total_step * self.hparams.warmup),
             self.total_step)
