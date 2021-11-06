@@ -28,7 +28,7 @@ class Bert(BaseADModel):
             
         self.tokenizer = tokenizer
         self.nlabels = args.nlabels
-
+        self.args = args
         self.config = AutoConfig.from_pretrained(args.pretrained_model)
         self.bert = AutoModel.from_pretrained(args.pretrained_model)
         self.bert.resize_token_embeddings(new_num_tokens=len(tokenizer))
@@ -48,6 +48,7 @@ class Bert(BaseADModel):
             pooler_output = self.mlp(pooler_output)
 
         logits = self.output(pooler_output)
+        logits = logits.view(self.args.train_batchsize, -1)
 
         return logits
 

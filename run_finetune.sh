@@ -28,8 +28,8 @@ CUDA_VISIBLE_DEVICES=$4 python train.py \
     --pooler_type 'cls' \
     --accelerator 'ddp' \
     --finetune \
+    --recreate_dataset
     # --child_tuning \
     # --checkpoint_path '/data/zxy/1919-AAAI22-SDU-shared-task2/save/BertModel/lr:1e-05-pooler_type:cls-pretrained_model:bert-base-cased-childtune:0-l2:0.0-finetune:0/epoch=01-valid_acc_epoch=0.4286.ckpt' \
     # --eval
-    # --recreate_dataset
 

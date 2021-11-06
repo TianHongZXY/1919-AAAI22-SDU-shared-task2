@@ -9,7 +9,9 @@
 #
 # ====================================================
 
+import time
 import argparse
+import itertools
 import json
 import copy
 import os
@@ -50,8 +52,8 @@ class Task2DataModel(pl.LightningDataModule):
         parser.add_argument('--cached_test_data',
                             default='cached_test_data.pkl',
                             type=str)
-        parser.add_argument('--train_batchsize', default=32, type=int)
-        parser.add_argument('--valid_batchsize', default=16, type=int)
+        parser.add_argument('--train_batchsize', default=16, type=int)
+        parser.add_argument('--valid_batchsize', default=32, type=int)
         parser.add_argument('--recreate_dataset', action='store_false', default=True)
         
         return parent_args
@@ -87,6 +89,8 @@ class Task2DataModel(pl.LightningDataModule):
 
         self.train_batchsize = args.train_batchsize
         self.valid_batchsize = args.valid_batchsize
+        # 避免model forward 展平时报错
+        assert self.train_batchsize == self.valid_batchsize
         self.recreate_dataset = args.recreate_dataset
 
     def setup(self, stage: Optional[str] = None) -> None:
@@ -125,29 +129,58 @@ class Task2DataModel(pl.LightningDataModule):
             avg_long_form_cur = 0
             max_long_form_cur = 0
 
-            # 把所有acronym的long form list都pad到统一长度
+            # 把所有acronym的long form list都pad到统一长度, 不过这里用负样本替代[PAD]
             acronym2lf_padded = copy.deepcopy(self.acronym2lf)
-            for acr, lf_list in acronym2lf_padded.items():
-                acronym2lf_padded[acr] += [self.tokenizer.pad_token] * (self.max_long_form - len(acronym2lf_padded[acr]))
+            for acr, lf_list in self.acronym2lf.items():
+                neg_samples = []
+                for i in range(self.max_long_form - len(self.acronym2lf[acr])):
+                    neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
+                    neg_s = random.sample(neg_s, k=1)[0]
+                    # 避免sample出真样本
+                    while neg_s in self.acronym2lf[acr]:
+                        neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
+                        neg_s = random.sample(neg_s, k=1)[0]
+                    neg_samples.append(neg_s)
+                acronym2lf_padded[acr] += neg_samples
+                # 打乱，避免总是分类到前几个位置
+                random.shuffle(acronym2lf_padded[acr])
 
             for example in tqdm(dataset):
                 sentence = example['sentence']
                 acronym = example['acronym']
+                acr_idx = sentence.index(acronym)
+                len_acr = len(acronym)
+                sentence = sentence[:acr_idx] + ' [unused1] ' + sentence[acr_idx:acr_idx + len_acr] + ' [unused2] ' + sentence[acr_idx + len_acr:]
+                #  print(acronym, sentence)
+                #  sentence.insert(acr_idx, '[unused1]')
+                #  sentence.insert(acr_idx + 2, '[unused2]')
+                #  sentence = ' '.join(sentence)
+
                 max_long_form_cur = max(max_long_form_cur, len(self.acronym2lf[acronym]))
                 avg_long_form_cur += len(self.acronym2lf[acronym])
                 
-                encoded = self.tokenizer(sentence, self.tokenizer.sep_token.join(acronym2lf_padded[acronym]))
+                try:
+                    encoded = self.tokenizer(acronym2lf_padded[acronym], [sentence] * self.max_long_form, padding=True)
+                except:
+                    print(acronym2lf_padded[acronym])
+                    print(sentence)
+                    raise ValueError()
+                sentence = [x + ' [SEP] ' + sentence for x in acronym2lf_padded[acronym]]
                 input_ids = encoded['input_ids']
                 attention_mask = encoded['attention_mask']
+                #  for ids in encoded["input_ids"]:
+                #      print(tokenizer.decode(ids))
                 # 用于预测时mask
-                softmax_mask = [1] * len(self.acronym2lf[acronym])
-                softmax_mask += [0] * (self.max_long_form - len(softmax_mask))
-                softmax_mask = softmax_mask
+                softmax_mask = [0] * self.max_long_form
+                for k in range(self.max_long_form):
+                    # 真样本的地方是1
+                    if(acronym2lf_padded[acronym][k] in self.acronym2lf[acronym]):
+                        softmax_mask[k] = 1
 
                 # acronym的long_form的索引即为标签
                 if not test:
                     long_form = example['label']
-                    labels = self.acronym2lf[acronym].index(long_form)
+                    labels = acronym2lf_padded[acronym].index(long_form)
 
                 # Roberta等模型没有token_type_ids
                 if 'token_type_ids' not in encoded:
@@ -171,19 +204,22 @@ class Task2DataModel(pl.LightningDataModule):
             print(output)
             data = Task2Dataset(data)
             torch.save(data, cached_data_path)
+            #  print('example:', example)
 
         return data
 
     def collate_fn(self, batch):
-
+        #  print('batch:', batch)
         batch_data = {}
         for key in batch[0]:
             batch_data[key] = [example[key] for example in batch]
-
-        input_ids = batch_data['input_ids']
-        attention_mask = batch_data['attention_mask']
-        token_type_ids = batch_data['token_type_ids']
+        #  print('batch_data:', batch_data)
+        input_ids = []
+        input_ids = list(itertools.chain.from_iterable(batch_data['input_ids']))
+        attention_mask = list(itertools.chain.from_iterable(batch_data['attention_mask']))
+        token_type_ids = list(itertools.chain.from_iterable(batch_data['token_type_ids']))
         softmax_mask = batch_data['softmax_mask']
+        #  softmax_mask = list(itertools.chain.from_iterable(batch_data['softmax_mask']))
         labels = None
         if 'labels' in batch_data:
             labels = torch.LongTensor(batch_data['labels'])
@@ -233,7 +269,7 @@ if __name__ == '__main__':
     total_parser = Task2DataModel.add_data_specific_args(total_parser)
     
     # * Args for training
-    total_parser = Trainer.add_argparse_args(total_parser)
+    #  total_parser = Trainer.add_argparse_args(total_parser)
 
     # * Args for model specific
     total_parser = Bert.add_model_specific_args(total_parser)
@@ -255,8 +291,8 @@ if __name__ == '__main__':
     batch = next(iter(val_dataloader))
 
     print(batch)
-    print(batch['softmax_mask'].size())
-    print(batch['softmax_mask'])
+    #  print(batch['softmax_mask'].size())
+    #  print(batch['softmax_mask'])
 
 
 #  def read_data(path):

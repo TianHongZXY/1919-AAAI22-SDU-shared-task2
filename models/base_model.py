@@ -145,12 +145,13 @@ class BaseADModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         inputs = self.train_inputs(batch)
         labels = batch['labels']
-        softmax_mask = batch['softmax_mask']
+        #  softmax_mask = batch['softmax_mask']
         logits = self(**inputs)
-        logits += (softmax_mask - 1) * 1e10
+        assert logits.size(1) == self.nlabels
+        #  logits += (softmax_mask - 1) * 1e10
 
         if labels is not None:
-            loss = self.loss_fn(logits.view(-1, self.nlabels), labels.view(-1))
+            loss = self.loss_fn(logits, labels.view(-1))
 
         ntotal = logits.size(0)
         ncorrect = (logits.argmax(dim=-1) == batch['labels']).long().sum()
@@ -166,13 +167,14 @@ class BaseADModel(pl.LightningModule):
         labels = batch['labels']
         softmax_mask = batch['softmax_mask']
         logits = self(**inputs)
+        assert logits.size(1) == self.nlabels
         logits += (softmax_mask - 1) * 1e10
 
         predict = logits.argmax(dim=-1)
         predict = predict.cpu().tolist()
 
         if labels is not None:
-            loss = self.loss_fn(logits.view(-1, self.nlabels), labels.view(-1))
+            loss = self.loss_fn(logits, labels.view(-1))
 
         ntotal = logits.size(0)
         ncorrect = (logits.argmax(dim=-1) == batch['labels']).long().sum()
@@ -244,4 +246,5 @@ class BaseADModel(pl.LightningModule):
         self._pooler = Pooler(args.pooler_type)
         if args.pooler_type == "cls":
             self.mlp = MLPLayer(self.hidden_size)
-        self.output = OutputLayer(self.hidden_size, self.nlabels)
+        # Attention! 注意这里因为label个数放在了dim 0
+        self.output = OutputLayer(self.hidden_size, 1)
