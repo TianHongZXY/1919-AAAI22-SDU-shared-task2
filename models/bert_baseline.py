@@ -48,17 +48,13 @@ class Bert(BaseADModel):
             pooler_output = self.mlp(pooler_output)
 
         logits = self.output(pooler_output)
-        logits = logits.view(self.args.train_batchsize, -1)
+        logits = logits.view(-1, self.args.nlabels)
 
         return logits
 
     def predict(self, input_ids, attention_mask, token_type_ids, softmax_mask):
-        outputs = self.bert(input_ids, attention_mask, token_type_ids, output_hidden_states=True)
-        pooler_output = self._pooler(attention_mask, outputs)
-        if self.pooler_type == "cls":
-            pooler_output = self.mlp(pooler_output)
+        logits = self(input_ids, attention_mask, token_type_ids, softmax_mask)
 
-        logits = self.output(pooler_output)
         logits += (softmax_mask - 1) * 1e10
 
         predict = logits.argmax(dim=-1)

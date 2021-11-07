@@ -46,7 +46,7 @@ def main(args):
     seed_everything(args.seed)
 
     checkpoint = ModelCheckpoint(dirpath=save_path,
-                                 save_top_k=1,
+                                 save_top_k=3,
                                  monitor='valid_f1',
                                  mode='max',
                                  filename='{epoch:02d}-{valid_f1:.4f}')
@@ -106,7 +106,7 @@ def evaluation(args, model, data_model, save_path, mode):
                                  batch['softmax_mask'].cuda()) #to(device))
 
         for idx, predict in enumerate(predicts):
-            long_form = data_model.acronym2lf[batch['acronym'][idx]][int(predict)]
+            long_form = data_model.acronym2lf_padded[batch['acronym'][idx]][int(predict)]
 
             pred = {
                 'ID': batch['idx'][idx],

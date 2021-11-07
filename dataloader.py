@@ -93,6 +93,22 @@ class Task2DataModel(pl.LightningDataModule):
         assert self.train_batchsize == self.valid_batchsize
         self.recreate_dataset = args.recreate_dataset
 
+        # 把所有acronym的long form list都pad到统一长度, 不过这里用负样本替代[PAD]
+        self.acronym2lf_padded = copy.deepcopy(self.acronym2lf)
+        for acr, lf_list in self.acronym2lf.items():
+            neg_samples = []
+            for i in range(self.max_long_form - len(self.acronym2lf[acr])):
+                neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
+                neg_s = random.sample(neg_s, k=1)[0]
+                # 避免sample出真样本
+                while neg_s in self.acronym2lf[acr]:
+                    neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
+                    neg_s = random.sample(neg_s, k=1)[0]
+                neg_samples.append(neg_s)
+            self.acronym2lf_padded[acr] += neg_samples
+            # 打乱，避免总是分类到前几个位置
+            random.shuffle(self.acronym2lf_padded[acr])
+
     def setup(self, stage: Optional[str] = None) -> None:
 
         if stage == 'fit':
@@ -129,22 +145,6 @@ class Task2DataModel(pl.LightningDataModule):
             avg_long_form_cur = 0
             max_long_form_cur = 0
 
-            # 把所有acronym的long form list都pad到统一长度, 不过这里用负样本替代[PAD]
-            acronym2lf_padded = copy.deepcopy(self.acronym2lf)
-            for acr, lf_list in self.acronym2lf.items():
-                neg_samples = []
-                for i in range(self.max_long_form - len(self.acronym2lf[acr])):
-                    neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
-                    neg_s = random.sample(neg_s, k=1)[0]
-                    # 避免sample出真样本
-                    while neg_s in self.acronym2lf[acr]:
-                        neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
-                        neg_s = random.sample(neg_s, k=1)[0]
-                    neg_samples.append(neg_s)
-                acronym2lf_padded[acr] += neg_samples
-                # 打乱，避免总是分类到前几个位置
-                random.shuffle(acronym2lf_padded[acr])
-
             for example in tqdm(dataset):
                 sentence = example['sentence']
                 acronym = example['acronym']
@@ -160,12 +160,12 @@ class Task2DataModel(pl.LightningDataModule):
                 avg_long_form_cur += len(self.acronym2lf[acronym])
                 
                 try:
-                    encoded = self.tokenizer(acronym2lf_padded[acronym], [sentence] * self.max_long_form, padding=True)
+                    encoded = self.tokenizer(self.acronym2lf_padded[acronym], [sentence] * self.max_long_form, padding=True)
                 except:
-                    print(acronym2lf_padded[acronym])
+                    print(self.acronym2lf_padded[acronym])
                     print(sentence)
                     raise ValueError()
-                sentence = [x + ' [SEP] ' + sentence for x in acronym2lf_padded[acronym]]
+                sentence = [x + ' [SEP] ' + sentence for x in self.acronym2lf_padded[acronym]]
                 input_ids = encoded['input_ids']
                 attention_mask = encoded['attention_mask']
                 #  for ids in encoded["input_ids"]:
@@ -174,17 +174,17 @@ class Task2DataModel(pl.LightningDataModule):
                 softmax_mask = [0] * self.max_long_form
                 for k in range(self.max_long_form):
                     # 真样本的地方是1
-                    if(acronym2lf_padded[acronym][k] in self.acronym2lf[acronym]):
+                    if(self.acronym2lf_padded[acronym][k] in self.acronym2lf[acronym]):
                         softmax_mask[k] = 1
 
                 # acronym的long_form的索引即为标签
                 if not test:
                     long_form = example['label']
-                    labels = acronym2lf_padded[acronym].index(long_form)
+                    labels = self.acronym2lf_padded[acronym].index(long_form)
 
                 # Roberta等模型没有token_type_ids
                 if 'token_type_ids' not in encoded:
-                    encoded['token_type_ids'] = [0] * len(input_ids)
+                    encoded['token_type_ids'] = [[0] * len(x) for x in input_ids]
                 example = {
                     'idx': example['ID'],
                     'acronym': acronym,
