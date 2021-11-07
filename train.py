@@ -81,7 +81,7 @@ def main(args):
     p, r, f1 = run_evaluation(gold=os.path.join(args.data_dir, 'dev.json'), pred=output_save_path)
     print('Official Scores:')
     print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p,r,f1))
-    output_save_path = os.path.join(save_path, 'dev_F1_{:.2f}_test_output.json'.format(f1))
+    output_save_path = os.path.join(save_path, 'dev_F1_{:.3f}_test_output.json'.format(f1))
     evaluation(args, model, data_model, output_save_path, mode='test')
 
 def evaluation(args, model, data_model, save_path, mode):
