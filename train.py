@@ -4,7 +4,7 @@
 #   Author        : Xinyu Zhu
 #   Email         : zhuxy21@mails.tsinghua.edu.cn
 #   File Name     : train.py
-#   Last Modified : 2021-10-17 09:30
+#   Last Modified : 2021-11-07 17:38
 #   Describe      : 
 #
 # ====================================================
@@ -34,9 +34,9 @@ def main(args):
     if args.checkpoint_path is not None:
         save_path = os.path.split(args.checkpoint_path)[0]
     else:
-        hyparas = '{}/{}/bs={}-lr={}-pooler_type={}-pretrained_model={}-childtune={}-l2={}-finetune={}'.format(
+        hyparas = '{}/{}/bs={}-lr={}-pooler_type={}-pretrained_model={}-childtune={}-l2={}-finetune={}-clip={}-dropout={}'.format(
             args.data_dir.split('/')[1], args.data_dir.split('/')[2], args.train_batchsize, args.lr, args.pooler_type, 
-            os.path.split(args.pretrained_model)[-1], int(args.child_tuning), args.l2, int(args.finetune))
+            os.path.split(args.pretrained_model)[-1], int(args.child_tuning), args.l2, int(args.finetune), args.gradient_clip_val, args.mlp_dropout)
         save_path = os.path.join(save_path, hyparas)
 
     Model = Bert
@@ -81,7 +81,7 @@ def main(args):
     p, r, f1 = run_evaluation(gold=os.path.join(args.data_dir, 'dev.json'), pred=output_save_path)
     print('Official Scores:')
     print('P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(p,r,f1))
-    output_save_path = os.path.join(save_path, 'dev_F1_{:.2f}_test_output.json'.format(f1))
+    output_save_path = os.path.join(save_path, 'dev_F1_{:.3f}_test_output.json'.format(f1))
     evaluation(args, model, data_model, output_save_path, mode='test')
 
 def evaluation(args, model, data_model, save_path, mode):

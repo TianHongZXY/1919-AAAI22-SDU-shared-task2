@@ -4,3 +4,5 @@ data/
 __pycache__/
 save/
 checkpoints/
+code/
+processed_data/

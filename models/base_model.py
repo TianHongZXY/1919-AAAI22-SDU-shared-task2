@@ -4,7 +4,7 @@
 #   Author        : Xinyu Zhu
 #   Email         : zhuxy21@mails.tsinghua.edu.cn
 #   File Name     : base_model.py
-#   Last Modified : 2021-10-17 08:04
+#   Last Modified : 2021-11-07 17:39
 #   Describe      : 
 #
 # ====================================================
@@ -65,20 +65,23 @@ class MLPLayer(nn.Module):
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
     """
 
-    def __init__(self, hidden_size):
+    def __init__(self, hidden_size, dropout_rate=0.5):
         super().__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
-        self.activation = nn.Tanh()
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.dense = nn.Sequential(nn.Linear(hidden_size, hidden_size), 
+                                   nn.ReLU(), 
+                                   nn.Linear(hidden_size, hidden_size),
+                                   )
 
     def forward(self, features, **kwargs):
-        x = self.dense(features)
-        x = self.activation(x)
+        x = self.dense(features) + features
+        x = F.relu(x)
+        x = self.dropout(x)
 
         return x
 
 
 class OutputLayer(nn.Module):
-
     def __init__(self, hidden_size, output_size):
         super().__init__()
         self.dense = nn.Linear(hidden_size, output_size)
@@ -110,6 +113,8 @@ class BaseADModel(pl.LightningModule):
         parser.add_argument('--warmup', default=0.1, type=float)
         parser.add_argument('--child_tuning', action='store_true', default=False, help="if use the child tuning optimizer")
         parser.add_argument('--finetune', action='store_true', default=False, help="if fine tune the pretrained model")
+        parser.add_argument('--mlp_dropout', default=0.5, type=float, help="Dropout rate in MLP layer after [CLS]")
+        parser.add_argument('--adv', action='store_true', default=False, help="if use adversarial training")
 
         return parent_args
 
@@ -245,6 +250,6 @@ class BaseADModel(pl.LightningModule):
         self.pooler_type = args.pooler_type
         self._pooler = Pooler(args.pooler_type)
         if args.pooler_type == "cls":
-            self.mlp = MLPLayer(self.hidden_size)
+            self.mlp = MLPLayer(self.hidden_size, args.mlp_dropout)
         # Attention! 注意这里因为label个数放在了dim 0
         self.output = OutputLayer(self.hidden_size, 1)
