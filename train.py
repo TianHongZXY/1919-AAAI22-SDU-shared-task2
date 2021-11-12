@@ -34,11 +34,14 @@ def main(args):
     if args.checkpoint_path is not None:
         save_path = os.path.split(args.checkpoint_path)[0]
     else:
-        hyparas = '{}/{}/bs={}-lr={}-pooler_type={}-pretrained_model={}-childtune={}-l2={}-finetune={}-clip={}-dropout={}'.format(
+        hyparas = '{}/{}/bs={}-lr={}-pooler_type={}-pretrained_model={}-childtune={}-l2={}-finetune={}-clip={}-dropout={}-adv={}-precision-{}'.format(
             args.data_dir.split('/')[1], args.data_dir.split('/')[2], args.train_batchsize, args.lr, args.pooler_type, 
-            os.path.split(args.pretrained_model)[-1], int(args.child_tuning), args.l2, int(args.finetune), args.gradient_clip_val, args.mlp_dropout)
+            os.path.split(args.pretrained_model)[-1], int(args.child_tuning), args.l2, int(args.finetune), args.gradient_clip_val, args.mlp_dropout, int(args.adv), 
+            args.precision)
         save_path = os.path.join(save_path, hyparas)
 
+    args.pretrained_model_name = args.pretrained_model
+    args.pretrained_model = os.path.join("/home/zxy21/codes_and_data/.cache/pretrained_models/", args.pretrained_model)
     Model = Bert
     if not os.path.exists(save_path):
         os.makedirs(save_path)
@@ -56,6 +59,10 @@ def main(args):
                                          logger=logger,
                                          callbacks=[checkpoint, early_stop])
 
+    print('-' * 30 + 'Args' + '-' * 30)
+    for k, v in vars(args).items():
+        print(k, ":", v, end=',\t')
+    print('\n' + '-' * 64)
     if args.eval:
         tokenizer = AutoTokenizer.from_pretrained(save_path)
         data_model = Task2DataModel(args, tokenizer)

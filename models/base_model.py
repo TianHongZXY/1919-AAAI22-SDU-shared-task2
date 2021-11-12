@@ -21,9 +21,12 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 from ChildTuningOptimizer import ChildTuningAdamW
 from sklearn.metrics import precision_score, recall_score, f1_score
 from scorer import score_expansion
+from torchsnooper import snoop
+from adversarial_loss import AdversarialLoss
+import time
 
 
-class Pooler(nn.Module):
+class Pooler(pl.LightningModule):
     """
     Parameter-free poolers to get the sentence embedding
     'cls': [CLS] representation with BERT/RoBERTa's MLP pooler.
@@ -38,9 +41,10 @@ class Pooler(nn.Module):
         assert self.pooler_type in ["cls", "cls_before_pooler", "avg", "avg_top2", "avg_first_last"], "unrecognized pooling type %s" % self.pooler_type
 
     def forward(self, attention_mask, outputs):
-        last_hidden = outputs.last_hidden_state
-        pooler_output = outputs.pooler_output
-        hidden_states = outputs.hidden_states
+        #  last_hidden = outputs.last_hidden_state
+        #  hidden_states = outputs.hidden_states
+        last_hidden = outputs[0]
+        hidden_states = outputs[2]
 
         if self.pooler_type in ['cls_before_pooler', 'cls']:
             return last_hidden[:, 0]
@@ -60,7 +64,7 @@ class Pooler(nn.Module):
             raise NotImplementedError
 
 
-class MLPLayer(nn.Module):
+class MLPLayer(pl.LightningModule):
     """
     Head for getting sentence representations over RoBERTa/BERT's CLS representation.
     """
@@ -72,20 +76,21 @@ class MLPLayer(nn.Module):
                                    nn.ReLU(), 
                                    nn.Linear(hidden_size, hidden_size),
                                    )
-
+    #  @snoop()
     def forward(self, features, **kwargs):
-        x = self.dense(features) + features
+        x = (self.dense(features) + features) / 2
         x = F.relu(x)
         x = self.dropout(x)
 
         return x
 
 
-class OutputLayer(nn.Module):
+class OutputLayer(pl.LightningModule):
     def __init__(self, hidden_size, output_size):
         super().__init__()
         self.dense = nn.Linear(hidden_size, output_size)
 
+    #  @snoop()
     def forward(self, features, **kwargs):
         logits = self.dense(features)
 
@@ -109,12 +114,23 @@ class BaseADModel(pl.LightningModule):
                             type=str)
         
         parser.add_argument('--lr', default=1e-5, type=float)
+        parser.add_argument('--bert_lr', default=1e-5, type=float)
         parser.add_argument('--l2', default=0., type=float)
         parser.add_argument('--warmup', default=0.1, type=float)
         parser.add_argument('--child_tuning', action='store_true', default=False, help="if use the child tuning optimizer")
         parser.add_argument('--finetune', action='store_true', default=False, help="if fine tune the pretrained model")
         parser.add_argument('--mlp_dropout', default=0.5, type=float, help="Dropout rate in MLP layer after [CLS]")
         parser.add_argument('--adv', action='store_true', default=False, help="if use adversarial training")
+        parser.add_argument('--divergence', default='js', type=str)
+        parser.add_argument('--adv_nloop', default=1, type=int,
+                            help="1 (default), inner loop for getting the best perturbations.")
+        parser.add_argument('--adv_step_size', default=1e-3, type=float,
+                            help="1 (default), perturbation size for adversarial training.")
+        parser.add_argument('--adv_alpha', default=1, type=float,
+                            help="1 (default), trade off parameter for adversarial training.")
+        parser.add_argument('--noise_var', default=1e-5, type=float)
+        parser.add_argument('--noise_gamma', default=1e-6, type=float, help="1e-4 (default), eps for adversarial copy training.")
+        parser.add_argument('--project_norm_type', default='inf', type=str)
 
         return parent_args
 
@@ -124,12 +140,17 @@ class BaseADModel(pl.LightningModule):
         if isinstance(args, dict):
             args = argparse.Namespace(**args)
 
+        self.args = args
         self.save_hyperparameters(args)
         self.tokenizer = tokenizer
         self.config = AutoConfig.from_pretrained(args.pretrained_model)
         self.hidden_size = self.config.hidden_size
         self.nlabels = args.nlabels 
         self.loss_fn = nn.CrossEntropyLoss()
+        self.adv = args.adv
+        if args.adv:
+            self.adv_loss_fn = AdversarialLoss(args)
+        self.init_model(args)
 
     def setup(self, stage) -> None:
         if stage == 'fit':
@@ -158,15 +179,24 @@ class BaseADModel(pl.LightningModule):
         if labels is not None:
             loss = self.loss_fn(logits, labels.view(-1))
 
+        if self.adv:
+            adv_loss = self.adv_forward(logits=logits, input_ids=batch['input_ids'],
+                                        attention_mask=batch['attention_mask'], 
+                                        token_type_ids=batch['token_type_ids'])
+
         ntotal = logits.size(0)
         ncorrect = (logits.argmax(dim=-1) == batch['labels']).long().sum()
         acc = ncorrect / ntotal
 
         self.log('train_loss', loss, on_step=True, prog_bar=True)
         self.log("train_acc", acc, on_step=True, prog_bar=True)
+        if self.adv:
+            self.log('adv_loss', adv_loss, on_step=True, prog_bar=True)
+            return loss + adv_loss
 
         return loss
-
+    
+    #  @snoop()
     def validation_step(self, batch, batch_idx):
         inputs = self.train_inputs(batch)
         labels = batch['labels']
@@ -200,6 +230,8 @@ class BaseADModel(pl.LightningModule):
             ntotal += x[1]
             predictions.extend(x[2])
             labels.extend(x[3])
+        
+
         precision, recall, f1 = score_expansion(labels, predictions, True)
         ncorrect = int(ncorrect.detach().cpu())
         #  recall = recall_score(labels, predictions, average="macro")
@@ -213,7 +245,6 @@ class BaseADModel(pl.LightningModule):
         #  print("ncorrect = {}, ntotal = {}".format(ncorrect, ntotal))
         print(f"Validation Accuracy: {round(ncorrect / ntotal, 3)}")
         print('Validation P: {:.2%}, R: {:.2%}, F1: {:.2%}'.format(precision, recall, f1))
-
 
     def configure_optimizers(self):
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -253,3 +284,4 @@ class BaseADModel(pl.LightningModule):
             self.mlp = MLPLayer(self.hidden_size, args.mlp_dropout)
         # Attention! 注意这里因为label个数放在了dim 0
         self.output = OutputLayer(self.hidden_size, 1)
+

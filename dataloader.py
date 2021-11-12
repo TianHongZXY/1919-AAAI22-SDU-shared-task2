@@ -27,6 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 from pytorch_lightning import Trainer, seed_everything, loggers
 from models.bert_baseline import Bert
+from torchsnooper import snoop
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -43,6 +44,9 @@ class Task2DataModel(pl.LightningDataModule):
         parser.add_argument('--valid_data', default='dev.json', type=str)
         parser.add_argument('--test_data', default='test.json', type=str)
         parser.add_argument('--diction', default='diction.json')
+        #TODO
+        parser.add_argument('--ori_diction', default='/home/zxy21/codes_and_data/1919-AAAI22-SDU-shared-task2/data/english/scientific/diction.json')
+
         parser.add_argument('--cached_train_data',
                             default='cached_train_data.pkl',
                             type=str)
@@ -65,18 +69,19 @@ class Task2DataModel(pl.LightningDataModule):
         self.num_workers = args.num_workers
         self.pretrained_model = args.pretrained_model
 
+        self.cached_data_dir = os.path.join(args.data_dir, args.pretrained_model_name)
+        if not os.path.exists(self.cached_data_dir):
+            os.makedirs(self.cached_data_dir)
 
-        self.cached_train_data_path = os.path.join(args.data_dir,
-                                                   args.cached_train_data)
-        self.cached_valid_data_path = os.path.join(args.data_dir,
-                                                   args.cached_valid_data)
-        self.cached_test_data_path = os.path.join(args.data_dir,
-                                                  args.cached_test_data)
+        self.cached_train_data_path = os.path.join(self.cached_data_dir, args.cached_train_data)
+        self.cached_valid_data_path = os.path.join(self.cached_data_dir, args.cached_valid_data)
+        self.cached_test_data_path = os.path.join(self.cached_data_dir, args.cached_test_data)
 
         self.train_data_path = os.path.join(args.data_dir, args.train_data)
         self.valid_data_path = os.path.join(args.data_dir, args.valid_data)
         self.test_data_path = os.path.join(args.data_dir, args.test_data)
         self.diction = os.path.join(args.data_dir, args.diction)
+        self.ori_diction = json.load(open(args.ori_diction, 'r'))
         self.acronym2lf = json.load(open(self.diction, 'r'))
         self.max_long_form = 0
         self.avg_long_form = 0
@@ -95,7 +100,8 @@ class Task2DataModel(pl.LightningDataModule):
 
         # 把所有acronym的long form list都pad到统一长度, 不过这里用负样本替代[PAD]
         self.acronym2lf_padded = copy.deepcopy(self.acronym2lf)
-        for acr, lf_list in self.acronym2lf.items():
+        print("Creating acronym2lf_padded...")
+        for acr, lf_list in tqdm(self.acronym2lf.items()):
             neg_samples = []
             for i in range(self.max_long_form - len(self.acronym2lf[acr])):
                 neg_s = random.sample(list(self.acronym2lf.values()), k=1)[0]
@@ -135,9 +141,14 @@ class Task2DataModel(pl.LightningDataModule):
 
     def create_dataset(self, cached_data_path, data_path, test=False):
 
-        if  os.path.exists(cached_data_path) and not self.recreate_dataset:
+        #  if  os.path.exists(cached_data_path) and not self.recreate_dataset:
+        if  os.path.exists(cached_data_path):
             print(f'Loading cached dataset from {cached_data_path}...')
             data = torch.load(cached_data_path)
+            #  data = list(filter(lambda x: len(self.acronym2lf[x['acronym']]) < 15 and (x['acronym'] in self.ori_diction or random.random() < 0.2), data))
+            data = list(filter(lambda x: len(self.acronym2lf[x['acronym']]) < 15, data))
+            output = f'In {cached_data_path}, there are {len(data)} instances'
+            print(output)
         else:
             print(f'Preprocess {data_path} for Task2...')
             dataset = json.load(open(data_path, 'r'))
@@ -148,7 +159,11 @@ class Task2DataModel(pl.LightningDataModule):
             for example in tqdm(dataset):
                 sentence = example['sentence']
                 acronym = example['acronym']
-                acr_idx = sentence.index(acronym)
+                try:
+                    acr_idx = sentence.index(acronym)
+                except:
+                    print(acronym)
+                    print(sentence)
                 len_acr = len(acronym)
                 sentence = sentence[:acr_idx] + ' [unused1] ' + sentence[acr_idx:acr_idx + len_acr] + ' [unused2] ' + sentence[acr_idx + len_acr:]
                 #  print(acronym, sentence)
@@ -160,7 +175,7 @@ class Task2DataModel(pl.LightningDataModule):
                 avg_long_form_cur += len(self.acronym2lf[acronym])
                 
                 try:
-                    encoded = self.tokenizer(self.acronym2lf_padded[acronym], [sentence] * self.max_long_form, padding=True)
+                    encoded = self.tokenizer(self.acronym2lf_padded[acronym], [sentence] * self.max_long_form, padding=True, truncation=True, max_length=512)
                 except:
                     print(self.acronym2lf_padded[acronym])
                     print(sentence)
